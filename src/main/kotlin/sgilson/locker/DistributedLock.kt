@@ -1,10 +1,12 @@
 package sgilson.locker
 
 import org.apache.zookeeper.CreateMode
+import org.apache.zookeeper.Watcher
 import org.apache.zookeeper.ZooDefs
 import org.apache.zookeeper.ZooKeeper
 import org.apache.zookeeper.data.Stat
 import java.time.Duration
+import java.util.concurrent.CountDownLatch
 
 class DistributedLock(
     private val zookeeper: ZooKeeper,
@@ -27,22 +29,13 @@ class DistributedLock(
                 ZooDefs.Ids.OPEN_ACL_UNSAFE,
                 mode, null as Stat?, ttl
             )
-        val lock = Object()
         while (true) {
-            val nodes = zookeeper.getChildren(basePath) {
-                synchronized(lock) {
-                    lock.notifyAll()
-                }
-            }
-            nodes.sort()
-            if (lockPath.endsWith(nodes.first())) {
+            val latch = CountDownLatch(1)
+            val nodes = zookeeper.getChildren(basePath) { latch.countDown() }.sorted()
+            if (lockPath.substringAfterLast('/') == nodes.first()) {
                 acquiredLockPath = lockPath
                 return
-            } else {
-                synchronized(lock) {
-                    lock.wait()
-                }
-            }
+            } else { latch.await() }
         }
     }
 

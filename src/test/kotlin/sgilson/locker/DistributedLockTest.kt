@@ -2,9 +2,11 @@ package sgilson.locker
 
 import org.apache.zookeeper.*
 import org.junit.ClassRule
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TestRule
+import org.junit.rules.Timeout
 import org.junit.runner.Description
 import org.junit.runners.model.Statement
 import org.testcontainers.containers.GenericContainer
@@ -17,6 +19,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.absoluteValue
+import kotlin.random.Random
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
@@ -33,8 +37,11 @@ internal class DistributedLockTest {
     @get:Rule
     val zk = ZookeeperRule()
 
+    @get:Rule
+    val timeout = Timeout(60, TimeUnit.SECONDS)
+
     @Test
-    fun `if lock is used, no exceptions are throws`() {
+    fun `if lock is used, no exceptions are thrown`() {
         val lock = zk.testLock()
         lock.lock()
         lock.unlock()
@@ -99,6 +106,24 @@ internal class DistributedLockTest {
             assertEquals(1000, i, "Integer was protected from concurrency")
         }.get()
     }
+
+    @Test
+    @Ignore("Not handled yet")
+    fun `if error occurs during acquire, other locks continue`() {
+        val (lock1, lock2, lock3) = zk.testLocks()
+        lock1.lock()
+        val latch1 = CountDownLatch(1)
+        val future1 = runAsync { latch1.countDown(); lock2.lock() }
+        latch1.await()
+
+        val latch2 = CountDownLatch(1)
+        val future2 = runAsync { latch2.countDown(); lock3.lock() }
+        latch2.await()
+
+        future1.cancel(true)
+        lock1.unlock()
+        future2.join() // lock2 should free resource and allow 3 to continue
+    }
 }
 
 class ZookeeperRule : TestRule {
@@ -117,7 +142,7 @@ class ZookeeperRule : TestRule {
         latch.await()
 
         nodePath =
-            zookeeper.create("/" + description.methodName, null, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT)
+            zookeeper.create("/" + Random.nextLong().absoluteValue.toString(16), null, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT)
         return statement {
             try {
                 base.evaluate()
