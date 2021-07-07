@@ -1,10 +1,10 @@
 package sgilson.locker
 
-import java.util.concurrent.CountDownLatch
 import org.apache.zookeeper.CreateMode
 import org.apache.zookeeper.ZooDefs
 import org.apache.zookeeper.ZooKeeper
 import org.slf4j.LoggerFactory
+import java.util.concurrent.CountDownLatch
 
 internal val log = LoggerFactory.getLogger(DistributedLock::class.java)
 
@@ -22,7 +22,7 @@ class DistributedLock(
 
     fun lock() {
         if (state !is Unlocked)
-            throw IllegalArgumentException("Lock is not unlocked. State is: $state")
+            throw IllegalStateException("Lock is not unlocked. State is: $state")
 
         val mode = CreateMode.EPHEMERAL_SEQUENTIAL
         val acl = ZooDefs.Ids.OPEN_ACL_UNSAFE
@@ -63,7 +63,7 @@ class DistributedLock(
             zookeeper.delete(path, -1)
             state = Unlocked
         } else {
-            throw IllegalArgumentException("Lock was not acquired. State is $state")
+            throw IllegalStateException("Lock was not acquired. State is $state")
         }
     }
 
