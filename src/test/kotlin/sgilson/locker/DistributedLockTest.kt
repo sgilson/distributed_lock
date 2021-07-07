@@ -4,6 +4,7 @@ import java.lang.Thread.sleep
 import java.util.LinkedList
 import java.util.concurrent.CompletableFuture.allOf
 import java.util.concurrent.CompletableFuture.runAsync
+import java.util.concurrent.CompletionException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -130,14 +131,9 @@ internal class DistributedLockTest {
         val (lock1, lock2, lock3) = zk.testLocks()
         lock1.lock()
 
-        val latch1 = CountDownLatch(1)
-        val thread1 = Thread {
-            latch1.countDown()
-            lock2.lock()
-        }
+        val thread1 = Thread { lock2.lock() }
         thread1.start()
-        sleep(1000)
-        latch1.await() // ensure thread1 is running and that lock2 is probably pending
+        lock2.awaitWaitingState()
 
         thread1.interrupt()
         lock1.unlock()
@@ -151,6 +147,22 @@ internal class DistributedLockTest {
             lock.lock()
             lock.lock()
         }
+    }
+
+    @Test
+    fun `if lock is deleted during wait, lock will terminate`() {
+        val (lock1, lock2) = zk.testLocks()
+        lock1.lock()
+        val result = runAsync { lock2.lock() }
+        lock2.awaitWaitingState()
+        zk.deleteFolder(zk.nodePath)
+        assertFails {
+            lock1.unlock()
+        }
+        assertFailsWith<CompletionException>("Node was deleted during acquire") {
+            result.join()
+        }
+        assertEquals(Unlocked, lock2.state)
     }
 }
 
@@ -232,9 +244,9 @@ inline fun statement(crossinline block: () -> Unit) =
         }
     }
 
-fun DistributedLock.awaitLocked() {
+fun DistributedLock.awaitWaitingState() {
     while (true) {
-        if (this.isLocked()) return
+        if (state is Waiting) return
         else Thread.yield()
     }
 }

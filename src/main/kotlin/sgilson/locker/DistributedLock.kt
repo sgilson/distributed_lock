@@ -13,8 +13,8 @@ class DistributedLock(
     private val basePath: String,
     private val lockName: String
 ) {
-    private var state: State = Unlocked
-        set(value) = synchronized(this) {
+    var state: State = Unlocked
+        private set(value) = synchronized(this) {
             log.debug("State transition: {} -> {}", state, value)
             field = value
         }
@@ -27,47 +27,68 @@ class DistributedLock(
         val mode = CreateMode.EPHEMERAL_SEQUENTIAL
         val acl = ZooDefs.Ids.OPEN_ACL_UNSAFE
         val lockPath = zookeeper.create("$basePath/$lockName", null, acl, mode)
-        state = Waiting(lockPath)
         try {
-            acquire(state as Waiting)
+            state = Waiting(lockPath)
+            handleState(state as Waiting)
         } catch (e: Exception) {
             state = ErrorRecovery(lockPath, e)
-            try {
-                if (zookeeper.state.isConnected) {
-                    zookeeper.delete(lockPath, -1)
-                }
-            } finally {
-                state = Unlocked
-            }
+            handleState(state as ErrorRecovery)
             throw e
         }
     }
 
-    private fun acquire(waiting: Waiting) {
+    private fun handleState(waiting: Waiting) {
         val path = waiting.pendingLockPath
+        val name = path.substringAfterLast('/')
         while (true) {
             val latch = CountDownLatch(1)
             val nodes = zookeeper.getChildren(basePath) { latch.countDown() }.sorted()
-            if (path.substringAfterLast('/') == nodes.first()) {
-                state = Locked(path)
-                return
-            } else {
-                latch.await()
+            when (name) {
+                nodes.first() -> {
+                    state = Locked(path)
+                    return
+                }
+                !in nodes -> {
+                    state = Unlocked
+                    throw IllegalStateException("Node was deleted during acquire: $path")
+                }
+                else -> latch.await()
             }
+        }
+    }
+
+    private fun handleState(errorRecovery: ErrorRecovery) {
+        try {
+            if (zookeeper.state.isConnected &&
+                zookeeper.exists(errorRecovery.lockPath, false) != null
+            )
+                zookeeper.delete(errorRecovery.lockPath, -1)
+        } catch (e: Exception) {
+            log.error(
+                "Failed to delete node for lock during error recovery: {}",
+                errorRecovery.lockPath,
+                e
+            )
+        } finally {
+            state = Unlocked
         }
     }
 
     fun unlock() = synchronized(this) {
         if (state is Locked) {
             val path = (state as Locked).lockPath
-            zookeeper.delete(path, -1)
-            state = Unlocked
+            try {
+                zookeeper.delete(path, -1)
+            } catch (e: Exception) {
+                log.error("Failed to delete node for lock: {}", path, e)
+                throw e
+            } finally {
+                state = Unlocked
+            }
         } else {
             throw IllegalStateException("Lock was not acquired. State is $state")
         }
     }
-
-    fun isLocked() = state is Locked
 }
 
 sealed class State
