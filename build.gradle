@@ -1,5 +1,6 @@
 plugins {
     id 'org.jetbrains.kotlin.jvm' version '1.4.30'
+    id 'com.diffplug.spotless' version '5.14.0'
 }
 
 group = 'sgilson'
@@ -10,10 +11,17 @@ repositories {
 }
 
 dependencies {
-    implementation 'org.apache.zookeeper:zookeeper:3.7.0'
+    implementation 'org.apache.zookeeper:zookeeper:3.7.0', {
+        exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+        exclude group: 'log4j', module: 'log4j'
+    }
+    implementation 'org.slf4j:slf4j-api:1.7.31'
 
     testImplementation 'org.jetbrains.kotlin:kotlin-test-junit'
-    testImplementation "org.testcontainers:testcontainers:1.15.3"
+    testImplementation 'org.testcontainers:testcontainers:1.15.3'
+    testImplementation 'org.apache.logging.log4j:log4j-core:2.14.1'
+    testImplementation 'org.apache.logging.log4j:log4j-slf4j-impl:2.14.1'
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8"
 }
 
 test {
@@ -21,10 +29,16 @@ test {
 }
 
 compileKotlin {
-    kotlinOptions.jvmTarget = '1.8'
+    kotlinOptions.jvmTarget = "11"
     kotlinOptions.useIR = true
 }
 
 compileTestKotlin {
-    kotlinOptions.jvmTarget = '1.8'
+    kotlinOptions.jvmTarget = "11"
+}
+
+spotless {
+    kotlin {
+        ktlint()
+    }
 }

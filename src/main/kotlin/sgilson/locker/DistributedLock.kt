@@ -1,53 +1,83 @@
 package sgilson.locker
 
+import java.util.concurrent.CountDownLatch
 import org.apache.zookeeper.CreateMode
-import org.apache.zookeeper.Watcher
 import org.apache.zookeeper.ZooDefs
 import org.apache.zookeeper.ZooKeeper
-import org.apache.zookeeper.data.Stat
-import java.time.Duration
-import java.util.concurrent.CountDownLatch
+import org.slf4j.LoggerFactory
+
+internal val log = LoggerFactory.getLogger(DistributedLock::class.java)
 
 class DistributedLock(
     private val zookeeper: ZooKeeper,
     private val basePath: String,
-    private val lockName: String,
-    private val config: LockConfig = EPHEMERAL
+    private val lockName: String
 ) {
-    private var acquiredLockPath: String? = null
+    private var state: State = Unlocked
+        set(value) = synchronized(this) {
+            log.debug("State transition: {} -> {}", state, value)
+            field = value
+        }
+        get() = synchronized(this) { field }
 
     fun lock() {
-        val (mode, ttl) = when (config) {
-            PERSISTED -> Pair(CreateMode.PERSISTENT_SEQUENTIAL, -1L)
-            EPHEMERAL -> Pair(CreateMode.EPHEMERAL_SEQUENTIAL, -1L)
-            is TtlConfig -> Pair(CreateMode.PERSISTENT_SEQUENTIAL_WITH_TTL, config.duration.toMillis())
+        if (state !is Unlocked)
+            throw IllegalArgumentException("Lock is not unlocked. State is: $state")
+
+        val mode = CreateMode.EPHEMERAL_SEQUENTIAL
+        val acl = ZooDefs.Ids.OPEN_ACL_UNSAFE
+        val lockPath = zookeeper.create("$basePath/$lockName", null, acl, mode)
+        state = Waiting(lockPath)
+        try {
+            acquire(state as Waiting)
+        } catch (e: Exception) {
+            state = ErrorRecovery(lockPath, e)
+            try {
+                if (zookeeper.state.isConnected) {
+                    zookeeper.delete(lockPath, -1)
+                }
+            } finally {
+                state = Unlocked
+            }
+            throw e
         }
-        val lockPath =
-            zookeeper.create(
-                "$basePath/$lockName",
-                null,
-                ZooDefs.Ids.OPEN_ACL_UNSAFE,
-                mode, null as Stat?, ttl
-            )
+    }
+
+    private fun acquire(waiting: Waiting) {
+        val path = waiting.pendingLockPath
         while (true) {
             val latch = CountDownLatch(1)
             val nodes = zookeeper.getChildren(basePath) { latch.countDown() }.sorted()
-            if (lockPath.substringAfterLast('/') == nodes.first()) {
-                acquiredLockPath = lockPath
+            if (path.substringAfterLast('/') == nodes.first()) {
+                state = Locked(path)
                 return
-            } else { latch.await() }
+            } else {
+                latch.await()
+            }
         }
     }
 
-    fun unlock() {
-        require(acquiredLockPath != null) { "Lock was never acquired" }
-
-        zookeeper.delete(acquiredLockPath, -1)
-        acquiredLockPath = null
+    fun unlock() = synchronized(this) {
+        if (state is Locked) {
+            val path = (state as Locked).lockPath
+            zookeeper.delete(path, -1)
+            state = Unlocked
+        } else {
+            throw IllegalArgumentException("Lock was not acquired. State is $state")
+        }
     }
+
+    fun isLocked() = state is Locked
 }
 
-sealed class LockConfig
-object PERSISTED : LockConfig()
-object EPHEMERAL : LockConfig()
-data class TtlConfig(val duration: Duration) : LockConfig()
+sealed class State
+
+object Unlocked : State() {
+    override fun toString() = "Unlocked"
+}
+
+data class Locked(val lockPath: String) : State()
+
+data class Waiting(val pendingLockPath: String) : State()
+
+data class ErrorRecovery(val lockPath: String, val throwable: Throwable) : State()
