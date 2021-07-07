@@ -1,10 +1,10 @@
 package sgilson.locker
 
+import java.util.concurrent.CountDownLatch
 import org.apache.zookeeper.CreateMode
 import org.apache.zookeeper.ZooDefs
 import org.apache.zookeeper.ZooKeeper
 import org.slf4j.LoggerFactory
-import java.util.concurrent.CountDownLatch
 
 internal val log = LoggerFactory.getLogger(DistributedLock::class.java)
 
